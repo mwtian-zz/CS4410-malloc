@@ -64,20 +64,20 @@ static void malloc_print_free_chunks(fnode_t list);
 
 void *malloc(size_t size) 
 {
-    //~ fnode_t fit;
-    //~ void *to_user;
+    fnode_t fit;
+    void *to_user;
     /* The chunk size to be requested */
     if (size < DIFF_OVERHEAD)
         size = DIFF_OVERHEAD;
     size = ROUNDUP_CHUNK(size);
-    //~ 
-    //~ if ((fit = malloc_find_fit(flist, size)) == NULL) {
-        //~ fit = malloc_expand(size);
-        //~ malloc_list_add(&flist, fit);
-    //~ }
-    //~ to_user = malloc_fnode_use(&flist, fit, size);
     
-    return get_memory(size);
+    if ((fit = malloc_find_fit(flist, size)) == NULL) {
+        fit = malloc_expand(size);
+        malloc_list_add(&flist, fit);
+    }
+    to_user = malloc_fnode_use(&flist, fit, size);
+    
+    return to_user;
 }
 
 void free(void* ptr) 
