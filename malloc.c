@@ -54,7 +54,7 @@ static fnode_t malloc_fnode_create(char *start, size_t size);
 static fnode_t malloc_find_fit(fnode_t target, size_t size);
 static fnode_t malloc_expand(size_t size);
 static void malloc_list_add(fnode_t *list, fnode_t item);
-static void malloc_fnode_use(fnode_t *list, fnode_t node, size_t size);
+static void *malloc_fnode_use(fnode_t *list, fnode_t node, size_t size);
 static void malloc_fnode_remove(fnode_t *list, fnode_t node);
 
 /* Debugging functions */
@@ -63,6 +63,7 @@ static void malloc_print_free_chunks(fnode_t list);
 void *malloc(size_t size) 
 {
     fnode_t fit;
+    void *to_user;
     /* The chunk size to be requested */
     if (size < DIFF_OVERHEAD)
         size = DIFF_OVERHEAD;
@@ -72,11 +73,12 @@ void *malloc(size_t size)
         fit = malloc_expand(size);
         malloc_list_add(&flist, fit);
     }
-    malloc_fnode_use(&flist, fit, size);
-    
+    to_user = malloc_fnode_use(&flist, fit, size);
+
+if (DEBUG)
     malloc_print_free_chunks(flist);
     
-    return fit;
+    return to_user; //get_memory(size);
 }
 
 void free(void* ptr) 
@@ -118,9 +120,9 @@ static fnode_t malloc_expand(size_t size)
     fnode_t node;
     /* Two cases; getting initial memory or expanding memory */
     if (0 == PAGE_SIZE) {
-        PAGE_SIZE = sysconf(_SC_PAGESIZE);
         init = 1;
-        size = ROUNDUP_PAGE(size + 2 * SIZE_T_SIZE);
+        PAGE_SIZE = sysconf(_SC_PAGESIZE);
+        size = ROUNDUP_PAGE(size + 2 * sizeof(struct fence));
     } else {
         size = ROUNDUP_PAGE(size);
     }
@@ -165,7 +167,7 @@ static void malloc_list_add(fnode_t *list, fnode_t item)
  * Prepare node to be returned to the user. Split the node if possible. 
  *  'size' is the size of the chunk to be returned.
  */
-static void malloc_fnode_use(fnode_t *list, fnode_t node, size_t size)
+static void *malloc_fnode_use(fnode_t *list, fnode_t node, size_t size)
 {
     char *start = (char*) node;
     char *split = (char*) node + size;
@@ -183,6 +185,7 @@ static void malloc_fnode_use(fnode_t *list, fnode_t node, size_t size)
         malloc_fnode_remove(&flist, node);
     }
     malloc_fnode_create(start, size);
+    return start + sizeof(struct fence);
 }
 
 /* Remove fnode from 'list' */
