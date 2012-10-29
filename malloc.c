@@ -15,11 +15,12 @@
 #define NODE_OVERHEAD (sizeof(struct fnode)+sizeof(struct fence))
 #define FENCE_OVERHEAD (2 * sizeof(struct fence))
 #define DIFF_OVERHEAD (NODE_OVERHEAD - FENCE_OVERHEAD)
+#define NODE_SIZE (sizeof(struct fnode))
+#define FENCE_SIZE (sizeof(struct fence))
 
 /* Assume sizeof(size_t) and sizeof(void*) are 8, the same. */
 #define SIZE_T_SIZE (sizeof(size_t))
-#define ALIGN_SIZE 8
-#define ALIGN8(x) (((((x)-1)>>3)+1)<<3)
+#define ALIGN_SIZE (2*SIZE_T_SIZE)
 
 /* Use one bit in size for marking the chunk in-use/free. */
 #define SET_USED(x) ((x) |= 1)
@@ -29,8 +30,9 @@
 
 /* Round up to nearest sizes. */
 #define ROUNDUP_8(x) (((((x)-1)>>3)+1)<<3)
+#define ROUNDUP_16(x) (((((x)-1)>>4)+1)<<4)
 #define ROUNDUP_PAGE(x) (((((x)-1)/PAGE_SIZE)+1)*PAGE_SIZE)
-#define ROUNDUP_CHUNK(x) ROUNDUP_8((x)+FENCE_OVERHEAD)
+#define ROUNDUP_CHUNK(x) ROUNDUP_16((x)+FENCE_OVERHEAD)
 
 /* 
  * Data structures for boundary tags (fences) and free nodes. 
@@ -62,20 +64,20 @@ static void malloc_print_free_chunks(fnode_t list);
 
 void *malloc(size_t size) 
 {
-    fnode_t fit;
-    void *to_user;
+    //~ fnode_t fit;
+    //~ void *to_user;
     /* The chunk size to be requested */
     if (size < DIFF_OVERHEAD)
         size = DIFF_OVERHEAD;
     size = ROUNDUP_CHUNK(size);
+    //~ 
+    //~ if ((fit = malloc_find_fit(flist, size)) == NULL) {
+        //~ fit = malloc_expand(size);
+        //~ malloc_list_add(&flist, fit);
+    //~ }
+    //~ to_user = malloc_fnode_use(&flist, fit, size);
     
-    if ((fit = malloc_find_fit(flist, size)) == NULL) {
-        fit = malloc_expand(size);
-        malloc_list_add(&flist, fit);
-    }
-    to_user = malloc_fnode_use(&flist, fit, size);
-    
-    return to_user;
+    return get_memory(size);
 }
 
 void free(void* ptr) 
@@ -228,7 +230,7 @@ static void malloc_print_free_chunks(fnode_t front)
 
 /***********************************************************************/
 
-static size_t highest(size_t in) 
+static inline size_t highest(size_t in) 
 {
     size_t num_bits = 0;
 
