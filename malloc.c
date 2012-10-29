@@ -74,29 +74,13 @@ void *malloc(size_t size)
         malloc_list_add(&flist, fit);
     }
     to_user = malloc_fnode_use(&flist, fit, size);
-
-if (DEBUG)
-    malloc_print_free_chunks(flist);
     
-    return to_user; //get_memory(size);
+    return to_user;
 }
 
 void free(void* ptr) 
 {
 
-}
-
-/* Initialize and fence a free node. */
-static fnode_t malloc_fnode_create(char *start, size_t size) 
-{
-    fnode_t node = (fnode_t) start;
-    fence_t end = (fence_t) (start + size) - 1;
-    node->size = size;
-    SET_FREE(node->size);
-    end->size = node->size;
-    node->prev = NULL;
-    node->next = NULL;
-    return node;
 }
 
 /* Find the first fit that can fit in size + new node overhead */
@@ -112,17 +96,29 @@ static fnode_t malloc_find_fit(fnode_t target, size_t size)
     return target;
 }
 
+/* Initialize and fence a free node. */
+static fnode_t malloc_fnode_create(char *start, size_t size) 
+{
+    fnode_t node = (fnode_t) start;
+    fence_t end = ((fence_t) (start + size)) - 1;
+    node->size = size;
+    SET_FREE(node->size);
+    end->size = node->size;
+    node->prev = NULL;
+    node->next = NULL;
+    return node;
+}
+
 /* Increase break, return a free node at the new break. */
 static fnode_t malloc_expand(size_t size)
 {
     char *start;
     char init = 0;
-    fnode_t node;
     /* Two cases; getting initial memory or expanding memory */
     if (0 == PAGE_SIZE) {
         init = 1;
         PAGE_SIZE = sysconf(_SC_PAGESIZE);
-        size = ROUNDUP_PAGE(size + 2 * sizeof(struct fence));
+        size = ROUNDUP_PAGE(size + FENCE_OVERHEAD);
     } else {
         size = ROUNDUP_PAGE(size);
     }
@@ -136,8 +132,8 @@ static fnode_t malloc_expand(size_t size)
         start += sizeof(struct fence);
         size -= FENCE_OVERHEAD;
     }
-    node = malloc_fnode_create(start, size);
-    return node;
+    
+    return malloc_fnode_create(start, size);
 }
 
 /* Add item to the address-ordered list of free nodes */
@@ -170,9 +166,9 @@ static void malloc_list_add(fnode_t *list, fnode_t item)
 static void *malloc_fnode_use(fnode_t *list, fnode_t node, size_t size)
 {
     char *start = (char*) node;
-    char *split = (char*) node + size;
-    fnode_t node_new;
+    char *split = ((char*) node) + size;
     size_t split_size = node->size - size;
+    fnode_t node_new;
     if (split_size >= NODE_OVERHEAD) {
         node_new = malloc_fnode_create(split, split_size);
         if ((node_new->prev = node->prev))
@@ -192,16 +188,23 @@ static void *malloc_fnode_use(fnode_t *list, fnode_t node, size_t size)
 static void malloc_fnode_remove(fnode_t *list, fnode_t node)
 {
     fnode_t front = *list;
+    //~ while (*list != node) {
+        //~ list = &(list->next);
+    //~ }
+    //~ if ((*list = node->next))
+        //~ *list->prev
+    
     if (*list == node) {
-        *list = node->next;
+        if ((*list = node->next)) {
+            (*list)->prev = NULL;
+        }
     } else {
         while (front->next != node) {
             front = front->next;
         }
-        front->next = node->next;
-    }
-    if (node->next) {
-            node->next->prev = front;
+        if ((front->next = node->next)) {
+            front->next->prev = front;
+        }
     }
 }
 
