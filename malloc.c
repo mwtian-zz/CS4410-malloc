@@ -5,6 +5,12 @@
 #include <stdio.h>
 #endif /* DEBUG != 0 */
 
+/* Set to 0 to not compile with pthread */
+#define PTHREAD_COMPILE  1
+#if PTHREAD_COMPILE != 0
+#include <pthread.h>
+#endif /* PTHREAD_COMPILE != 0 */
+
 #include <errno.h>
 #include <limits.h>
 #include <unistd.h>
@@ -53,20 +59,29 @@ typedef struct fnode {
 } *fnode_t;
 
 /* Global variables */
+/* Size of memory page in bytes */
 static size_t PAGE_SIZE = 0;
+/* Head of free nodes list */
 static fnode_t flist = NULL;
+/* Mutex lock, use pthread */
+#if PTHREAD_COMPILE != 0
+static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif /* PTHREAD_COMPILE != 0 */
+
 
 /* Helper-function declarations. TExplained before each function definition. */
+
+static fnode_t malloc_expand(size_t size);
 static fnode_t malloc_fnode_create(char *start, size_t size);
+static fnode_t malloc_find_fit(fnode_t target, size_t size);
+static void *malloc_fnode_split(fnode_t *list, fnode_t node, size_t size);
 static void malloc_fnode_assign(char *start, size_t size);
 static void malloc_fnode_release(fnode_t *list, fence_t item);
-static fnode_t malloc_find_fit(fnode_t target, size_t size);
-static fnode_t malloc_expand(size_t size);
-static void malloc_list_addr_insert(fnode_t *list, fnode_t item);
-static void *malloc_fnode_split(fnode_t *list, fnode_t node, size_t size);
-static void malloc_list_remove(fnode_t *list, fnode_t node);
 static fnode_t malloc_fnode_fuse_up(fnode_t *list, fnode_t node);
 static fnode_t malloc_fnode_fuse_down(fnode_t *list, fnode_t node);
+
+static void malloc_list_addr_insert(fnode_t *list, fnode_t item);
+static void malloc_list_remove(fnode_t *list, fnode_t node);
 
 /* Debugging functions */
 #if DEBUG != 0
@@ -76,28 +91,47 @@ static void malloc_print_free_chunks(fnode_t list);
 void *malloc(size_t size) 
 {
     fnode_t fit;
+    void *ret;
     /* The chunk size to be requested */
     if (size < DIFF_OVERHEAD) {
         size = DIFF_OVERHEAD;
     }
     size = ROUNDUP_CHUNK(size);
     
+    #if PTHREAD_COMPILE != 0
+    pthread_mutex_lock(&mutex);
+    #endif /* PTHREAD_COMPILE != 0 */
+    
     if ((fit = malloc_find_fit(flist, size)) == NULL) {
         if ((fit = malloc_expand(size)) != NULL) {
             malloc_list_addr_insert(&flist, fit);
         } else {
             errno = ENOMEM;
+            #if PTHREAD_COMPILE != 0
+            pthread_mutex_unlock(&mutex);
+            #endif /* PTHREAD_COMPILE != 0 */
             return NULL;
         }
     }
-
-    return malloc_fnode_split(&flist, fit, size);
+    ret = malloc_fnode_split(&flist, fit, size);
+    
+    #if PTHREAD_COMPILE != 0
+    pthread_mutex_unlock(&mutex);
+    #endif /* PTHREAD_COMPILE != 0 */
+    
+    return ret;
 }
 
 void free(void* ptr) 
 {
     if (ptr) {
+        #if PTHREAD_COMPILE != 0
+        pthread_mutex_lock(&mutex);
+        #endif /* PTHREAD_COMPILE != 0 */
         malloc_fnode_release(&flist, FENCE_BACKWARD(ptr));
+        #if PTHREAD_COMPILE != 0
+        pthread_mutex_unlock(&mutex);
+        #endif /* PTHREAD_COMPILE != 0 */
     }
 }
 
