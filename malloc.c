@@ -20,7 +20,7 @@
 #define FENCE_OVERHEAD (2*FENCE_SIZE)
 #define DIFF_OVERHEAD (NODE_SIZE-FENCE_SIZE)
 
-/* Assume sizeof(size_t) and sizeof(void*) are 8, the same. */
+/* Assume sizeof(size_t) and sizeof(void*) are 8, the same */
 #define SIZE_T_SIZE (sizeof(size_t))
 #define ALIGN_SIZE (2*SIZE_T_SIZE)
 
@@ -38,6 +38,7 @@
 
 /* Get chunk size from fence */
 #define FENCE_BACKWARD(x) ((fence_t)(x)-1)
+
 /* 
  * Data structures for boundary tags (fences) and free nodes. 
  *  'size' is the size of the whole chunk, including boundary overheads. 
@@ -64,6 +65,8 @@ static fnode_t malloc_expand(size_t size);
 static void malloc_list_addr_insert(fnode_t *list, fnode_t item);
 static void *malloc_fnode_split(fnode_t *list, fnode_t node, size_t size);
 static void malloc_list_remove(fnode_t *list, fnode_t node);
+static fnode_t malloc_fnode_fuse_up(fnode_t *list, fnode_t node);
+static fnode_t malloc_fnode_fuse_down(fnode_t *list, fnode_t node);
 
 /* Debugging functions */
 #if DEBUG != 0
@@ -87,7 +90,7 @@ void *malloc(size_t size)
             return NULL;
         }
     }
-    
+
     return malloc_fnode_split(&flist, fit, size);
 }
 
@@ -115,7 +118,7 @@ static fnode_t malloc_find_fit(fnode_t target, size_t size)
 static fnode_t malloc_fnode_create(char *start, size_t size) 
 {
     fnode_t node = (fnode_t) start;
-    fence_t end = ((fence_t) (start + size)) - 1;
+    fence_t end = FENCE_BACKWARD(start + size);
     node->size = size;
     SET_FREE(node->size);
     end->size = node->size;
@@ -143,14 +146,13 @@ static fnode_t malloc_expand(size_t size)
     /* Put on initial fences */
     if (1 == init) {
         ((fence_t) start)->size = 1;
-        (((fence_t) (start + size)) - 1)->size = 1;
+        FENCE_BACKWARD(start + size)->size = 1;
         start += FENCE_SIZE;
         size -= FENCE_OVERHEAD;
     } else {
-        (((fence_t) (start + size)) - 1)->size = 1;
+        FENCE_BACKWARD(start + size)->size = 1;
         start -= FENCE_SIZE;
     }
-
     return malloc_fnode_create(start, size);
 }
 
@@ -192,12 +194,14 @@ static void *malloc_fnode_split(fnode_t *list, fnode_t node, size_t size)
             node_new->next->prev = node_new;
         if (*list == node)
             *list = node_new;
+        malloc_fnode_assign(start, size);
     } else {
         malloc_list_remove(&flist, node);
+        malloc_fnode_assign(start, node->size);
     }
-    malloc_fnode_assign(start, size);
     
-    return start + FENCE_SIZE; //sizeof(struct fence);
+    
+    return start + FENCE_SIZE;
 }
 
 /* Prepare node to be returned to the user. */
@@ -215,13 +219,11 @@ static void malloc_fnode_assign(char *start, size_t size)
 /* Add the chunk back to the free list. */
 static void malloc_fnode_release(fnode_t *list, fence_t target) 
 {
+    fnode_t node;
     SET_FREE(target->size);
-    fnode_t node = malloc_fnode_create((char*)target, target->size);
-    malloc_list_addr_insert(list, node);
-    
-#if DEBUG != 0
-        malloc_print_free_chunks(*list);
-#endif /* DEBUG != 0 */
+    node = malloc_fnode_create((char*)target, target->size);
+    node = malloc_fnode_fuse_up(list, node);
+    node = malloc_fnode_fuse_down(list, node);
 }
 
 /* Remove fnode from 'list' */
@@ -240,6 +242,45 @@ static void malloc_list_remove(fnode_t *list, fnode_t node)
             front->next->prev = front;
         }
     }
+}
+
+/* Fuse with the neighbor free nodes if possible. */
+static fnode_t malloc_fnode_fuse_up(fnode_t *list, fnode_t node)
+{
+    fnode_t prev_node; 
+    fence_t prev_backfence = FENCE_BACKWARD(node);
+    fence_t curr_backfence;
+    if (ISUSED(prev_backfence->size)) {
+        malloc_list_addr_insert(list, node);
+        return node;
+    }
+    prev_node = (fnode_t) ((char*)node - prev_backfence->size);
+    curr_backfence = FENCE_BACKWARD((char*) node + node->size);
+    prev_node->size += node->size;
+    curr_backfence->size = prev_node->size;
+    
+    return prev_node;
+}
+
+static fnode_t malloc_fnode_fuse_down(fnode_t *list, fnode_t node)
+{
+    fence_t curr_backfence = FENCE_BACKWARD((char*) node + node->size);
+    fnode_t next_node = (fnode_t) (curr_backfence + 1); 
+    fence_t next_backfence;
+    if (ISUSED(next_node->size)) {
+        return node;
+    }
+    next_backfence = FENCE_BACKWARD((char*) next_node + next_node->size);
+    node->size += next_node->size;
+    next_backfence->size = node->size;
+    
+    if ((node->next = next_node->next)) {
+        node->next->prev = node;
+    }
+    
+    next_node->prev = NULL;
+    next_node->next = NULL;
+    return node;
 }
 
 
