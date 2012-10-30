@@ -1,14 +1,17 @@
-#include <errno.h>
-#include <limits.h>
+/* Set to 0 to turn off debugging. */
+#define DEBUG 0
+#if DEBUG != 0
 #include <string.h>
 #include <stdio.h>
+#endif /* DEBUG != 0 */
+
+#include <errno.h>
+#include <limits.h>
 #include <unistd.h>
 
 #include "malloc.h"
 #include "memreq.h"
 
-/* Set to 0 to turn off debugging. */
-#define DEBUG 0
 
 /* Memory overhead of a free node. */
 #define NODE_SIZE (sizeof(struct fnode))
@@ -63,7 +66,9 @@ static void *malloc_fnode_split(fnode_t *list, fnode_t node, size_t size);
 static void malloc_list_remove(fnode_t *list, fnode_t node);
 
 /* Debugging functions */
+#if DEBUG != 0
 static void malloc_print_free_chunks(fnode_t list);
+#endif /* DEBUG != 0 */
 
 void *malloc(size_t size) 
 {
@@ -214,8 +219,9 @@ static void malloc_fnode_release(fnode_t *list, fence_t target)
     fnode_t node = malloc_fnode_create((char*)target, target->size);
     malloc_list_addr_insert(list, node);
     
-    if (DEBUG)
+#if DEBUG != 0
         malloc_print_free_chunks(*list);
+#endif /* DEBUG != 0 */
 }
 
 /* Remove fnode from 'list' */
@@ -236,6 +242,8 @@ static void malloc_list_remove(fnode_t *list, fnode_t node)
     }
 }
 
+
+#if DEBUG != 0
 static void malloc_print_free_chunks(fnode_t front)
 {
     int i = 0;
@@ -252,6 +260,7 @@ static void malloc_print_free_chunks(fnode_t front)
         front = front->next;
     }
 }
+#endif /* DEBUG != 0 */
 
 /***********************************************************************/
 
@@ -270,6 +279,7 @@ static inline size_t highest(size_t in)
 void* calloc(size_t number, size_t size) 
 {
     size_t number_size = 0;
+    size_t *target, *end;
 
     /* This prevents an integer overflow.  A size_t is a typedef to an integer
      * large enough to index all of memory.  If we cannot fit in a size_t, then
@@ -284,7 +294,11 @@ void* calloc(size_t number, size_t size)
     void* ret = malloc(number_size);
 
     if (ret) {
-        memset(ret, 0, number_size);
+        target = ret;
+        end = target + number_size / SIZE_T_SIZE;
+        while (target != end) {
+            *(target++) = 0;
+        }
     }
 
     return ret;
@@ -295,6 +309,7 @@ void* realloc(void *ptr, size_t size)
     /* Set this to the size of the buffer pointed to by ptr */
     size_t old_size;
     void* ret;
+    size_t *source, *target, *end;
     if (NULL == ptr) {
         return malloc(size);
     }
@@ -307,7 +322,12 @@ void* realloc(void *ptr, size_t size)
     if (old_size >= size)
         return ptr;
     if ((ret = malloc(size))) {
-        memmove(ret, ptr, size);
+        source = ptr;
+        target = ret;
+        end = target + size / SIZE_T_SIZE;
+        while (target != end) {
+            *(target++) = *(source++);
+        }
         free(ptr);
     } 
     return ret;
