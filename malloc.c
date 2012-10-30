@@ -3,7 +3,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <stdlib.h>
 
 #include "malloc.h"
 #include "memreq.h"
@@ -12,11 +11,11 @@
 #define DEBUG 0
 
 /* Memory overhead of a free node. */
-#define NODE_OVERHEAD (sizeof(struct fnode)+sizeof(struct fence))
-#define FENCE_OVERHEAD (2 * sizeof(struct fence))
-#define DIFF_OVERHEAD (NODE_OVERHEAD - FENCE_OVERHEAD)
 #define NODE_SIZE (sizeof(struct fnode))
 #define FENCE_SIZE (sizeof(struct fence))
+#define NODE_OVERHEAD (NODE_SIZE+FENCE_SIZE)
+#define FENCE_OVERHEAD (2*FENCE_SIZE)
+#define DIFF_OVERHEAD (NODE_SIZE-FENCE_SIZE)
 
 /* Assume sizeof(size_t) and sizeof(void*) are 8, the same. */
 #define SIZE_T_SIZE (sizeof(size_t))
@@ -34,6 +33,8 @@
 #define ROUNDUP_PAGE(x) (((((x)-1)/PAGE_SIZE)+1)*PAGE_SIZE)
 #define ROUNDUP_CHUNK(x) ROUNDUP_16((x)+FENCE_OVERHEAD)
 
+/* Get chunk size from fence */
+#define FENCE_BACKWARD(x) ((fence_t)(x)-1)
 /* 
  * Data structures for boundary tags (fences) and free nodes. 
  *  'size' is the size of the whole chunk, including boundary overheads. 
@@ -65,19 +66,22 @@ static void malloc_print_free_chunks(fnode_t list);
 void *malloc(size_t size) 
 {
     fnode_t fit;
-    void *to_user;
     /* The chunk size to be requested */
-    if (size < DIFF_OVERHEAD)
+    if (size < DIFF_OVERHEAD) {
         size = DIFF_OVERHEAD;
+    }
     size = ROUNDUP_CHUNK(size);
     
     if ((fit = malloc_find_fit(flist, size)) == NULL) {
-        fit = malloc_expand(size);
-        malloc_list_add(&flist, fit);
+        if ((fit = malloc_expand(size)) != NULL) {
+            malloc_list_add(&flist, fit);
+        } else {
+            errno = ENOMEM;
+            return NULL;
+        }
     }
-    to_user = malloc_fnode_use(&flist, fit, size);
     
-    return to_user;
+    return malloc_fnode_use(&flist, fit, size);
 }
 
 void free(void* ptr) 
@@ -131,10 +135,13 @@ static fnode_t malloc_expand(size_t size)
     if (1 == init) {
         ((fence_t) start)->size = 1;
         (((fence_t) (start + size)) - 1)->size = 1;
-        start += sizeof(struct fence);
+        start += FENCE_SIZE;
         size -= FENCE_OVERHEAD;
+    } else {
+        (((fence_t) (start + size)) - 1)->size = 1;
+        start -= FENCE_SIZE;
     }
-    
+
     return malloc_fnode_create(start, size);
 }
 
@@ -183,7 +190,11 @@ static void *malloc_fnode_use(fnode_t *list, fnode_t node, size_t size)
         malloc_fnode_remove(&flist, node);
     }
     malloc_fnode_create(start, size);
-    return start + sizeof(struct fence);
+//~ printf("node pointer: %p\n", start);
+//~ printf("data pointer: %p\n", start + FENCE_SIZE);
+//~ printf("data size: %ld\n", ((fence_t) start)->size - FENCE_OVERHEAD);
+
+    return start + FENCE_SIZE; //sizeof(struct fence);
 }
 
 /* Remove fnode from 'list' */
@@ -222,7 +233,6 @@ static void malloc_print_free_chunks(fnode_t front)
         printf("Footer shows size %ld.\n", footer_size);
         if (front->size != footer_size) {
             printf("Inconsistent chunk size!\n");
-            exit(-1);
         }
         front = front->next;
     }
@@ -267,18 +277,28 @@ void* calloc(size_t number, size_t size)
 
 void* realloc(void *ptr, size_t size) 
 {
-    size_t old_size = 0; /* XXX Set this to the size of the buffer pointed to by ptr */
-    void* ret = malloc(size);
-
-    if (ret) {
-        if (ptr) {
-            memmove(ret, ptr, old_size < size ? old_size : size);
-            free(ptr);
-        }
-
-        return ret;
-    } else {
-        errno = ENOMEM;
-        return NULL;
+    /* Set this to the size of the buffer pointed to by ptr */
+    size_t old_size;
+    void* ret;
+    if (NULL == ptr) {
+        return malloc(size);
     }
+    if (0 == size) {
+        free(ptr);
+        return ptr;
+    }
+    
+    old_size = FENCE_BACKWARD(ptr)->size - FENCE_OVERHEAD;
+    if (old_size >= size)
+        return ptr;
+    if ((ret = malloc(size))) {
+//memmove(ret, ptr, old_size < size ? old_size : size);
+//printf("old_size: %ld\n", old_size);
+//printf("size: %ld\n\n", size);
+//printf("data pointer: %p\n", ((fence_t) ptr));
+        memmove(ret, ptr, size);
+        free(ptr);
+    } 
+    return ret;
+    
 }
