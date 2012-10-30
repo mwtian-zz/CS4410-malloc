@@ -54,11 +54,13 @@ static fnode_t flist = NULL;
 
 /* Helper-function declarations. TExplained before each function definition. */
 static fnode_t malloc_fnode_create(char *start, size_t size);
+static void malloc_fnode_assign(char *start, size_t size);
+static void malloc_fnode_release(fnode_t *list, fence_t item);
 static fnode_t malloc_find_fit(fnode_t target, size_t size);
 static fnode_t malloc_expand(size_t size);
-static void malloc_list_add(fnode_t *list, fnode_t item);
-static void *malloc_fnode_use(fnode_t *list, fnode_t node, size_t size);
-static void malloc_fnode_remove(fnode_t *list, fnode_t node);
+static void malloc_list_addr_insert(fnode_t *list, fnode_t item);
+static void *malloc_fnode_split(fnode_t *list, fnode_t node, size_t size);
+static void malloc_list_remove(fnode_t *list, fnode_t node);
 
 /* Debugging functions */
 static void malloc_print_free_chunks(fnode_t list);
@@ -74,19 +76,21 @@ void *malloc(size_t size)
     
     if ((fit = malloc_find_fit(flist, size)) == NULL) {
         if ((fit = malloc_expand(size)) != NULL) {
-            malloc_list_add(&flist, fit);
+            malloc_list_addr_insert(&flist, fit);
         } else {
             errno = ENOMEM;
             return NULL;
         }
     }
     
-    return malloc_fnode_use(&flist, fit, size);
+    return malloc_fnode_split(&flist, fit, size);
 }
 
 void free(void* ptr) 
 {
-
+    if (ptr) {
+        malloc_fnode_release(&flist, FENCE_BACKWARD(ptr));
+    }
 }
 
 /* Find the first fit that can fit in size + new node overhead */
@@ -146,7 +150,7 @@ static fnode_t malloc_expand(size_t size)
 }
 
 /* Add item to the address-ordered list of free nodes */
-static void malloc_list_add(fnode_t *list, fnode_t item)
+static void malloc_list_addr_insert(fnode_t *list, fnode_t item)
 {
     fnode_t front = *list;
     if (NULL == *list || item < *list) {
@@ -168,11 +172,8 @@ static void malloc_list_add(fnode_t *list, fnode_t item)
     }
 }
 
-/* 
- * Prepare node to be returned to the user. Split the node if possible. 
- *  'size' is the size of the chunk to be returned.
- */
-static void *malloc_fnode_use(fnode_t *list, fnode_t node, size_t size)
+/* Split the node if possible. 'size' is the size requested (rounded up). */
+static void *malloc_fnode_split(fnode_t *list, fnode_t node, size_t size)
 {
     char *start = (char*) node;
     char *split = ((char*) node) + size;
@@ -187,26 +188,40 @@ static void *malloc_fnode_use(fnode_t *list, fnode_t node, size_t size)
         if (*list == node)
             *list = node_new;
     } else {
-        malloc_fnode_remove(&flist, node);
+        malloc_list_remove(&flist, node);
     }
-    malloc_fnode_create(start, size);
-//~ printf("node pointer: %p\n", start);
-//~ printf("data pointer: %p\n", start + FENCE_SIZE);
-//~ printf("data size: %ld\n", ((fence_t) start)->size - FENCE_OVERHEAD);
-
+    malloc_fnode_assign(start, size);
+    
     return start + FENCE_SIZE; //sizeof(struct fence);
 }
 
+/* Prepare node to be returned to the user. */
+static void malloc_fnode_assign(char *start, size_t size)
+{
+    fnode_t node = (fnode_t) start;
+    fence_t end = FENCE_BACKWARD((start + size));
+    node->size = size;
+    SET_USED(node->size);
+    end->size = node->size;
+    node->prev = NULL;
+    node->next = NULL;
+}
+
+/* Add the chunk back to the free list. */
+static void malloc_fnode_release(fnode_t *list, fence_t target) 
+{
+    SET_FREE(target->size);
+    fnode_t node = malloc_fnode_create((char*)target, target->size);
+    malloc_list_addr_insert(list, node);
+    
+    if (DEBUG)
+        malloc_print_free_chunks(*list);
+}
+
 /* Remove fnode from 'list' */
-static void malloc_fnode_remove(fnode_t *list, fnode_t node)
+static void malloc_list_remove(fnode_t *list, fnode_t node)
 {
     fnode_t front = *list;
-    //~ while (*list != node) {
-        //~ list = &(list->next);
-    //~ }
-    //~ if ((*list = node->next))
-        //~ *list->prev
-    
     if (*list == node) {
         if ((*list = node->next)) {
             (*list)->prev = NULL;
@@ -288,14 +303,10 @@ void* realloc(void *ptr, size_t size)
         return ptr;
     }
     
-    old_size = FENCE_BACKWARD(ptr)->size - FENCE_OVERHEAD;
+    old_size = GETSIZE(FENCE_BACKWARD(ptr)->size) - FENCE_OVERHEAD;
     if (old_size >= size)
         return ptr;
     if ((ret = malloc(size))) {
-//memmove(ret, ptr, old_size < size ? old_size : size);
-//printf("old_size: %ld\n", old_size);
-//printf("size: %ld\n\n", size);
-//printf("data pointer: %p\n", ((fence_t) ptr));
         memmove(ret, ptr, size);
         free(ptr);
     } 
