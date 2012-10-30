@@ -1,8 +1,8 @@
 /* Set to 0 to turn off debugging. */
-#define DEBUG 0
+#define DEBUG 1
 #if DEBUG != 0
 #include <string.h>
-/* Do not printf inside malloc or free */
+/* Do not printf inside free */
 #include <stdio.h> 
 #endif /* DEBUG != 0 */
 
@@ -34,7 +34,7 @@
 /* Use one bit in size for marking the chunk in-use/free. */
 #define SET_USED(x) ((x) |= 1)
 #define SET_FREE(x) ((x) &= (~1))
-#define ISUSED(x) ((x) & 1)
+#define ISUSED(x) ((x) & (1))
 #define GETSIZE(x) (((x)>>1)<<1)
 
 /* Round up to nearest sizes. */
@@ -120,24 +120,14 @@ void *malloc(size_t size)
             return NULL;
         }
     }
-#if DEBUG != 0
-printf("In list. \n");
-malloc_print_free_chunks(flist);
-#endif /* DEBUG != 0 */
     fit = malloc_fnode_split(&flist, fit, size);
     malloc_list_remove(&flist, fit);
-#if DEBUG != 0
-printf("Removed from list. \n");
-malloc_print_free_chunks(flist);
-#endif /* DEBUG != 0 */
     ret = malloc_fnode_assign_used((char*)fit, fit->size);
     
     #if PTHREAD_COMPILE != 0
     pthread_mutex_unlock(&mutex);
     #endif /* PTHREAD_COMPILE != 0 */
-#if DEBUG != 0
-printf("Return: %p\n", ret);
-#endif /* DEBUG != 0 */
+    
     return ret;
 }
 
@@ -234,8 +224,11 @@ static void malloc_list_addr_insert(fnode_t *list, fnode_t item)
         item->next = *list;
         *list = item;
     } else {
-        while (front->next != NULL && front->next < item) {
+        while (front->next != NULL && front->next <= item) {
             front = front->next;
+        }
+        if (front->next == item) {
+            return;
         }
         item->prev = front;
         item->next = front->next;
@@ -255,9 +248,6 @@ static fnode_t malloc_fnode_split(fnode_t *list, fnode_t node, size_t size)
     char *split = ((char*) node) + size;
     size_t split_size = node->size - size;
     fnode_t node_new;
-    
-//assert( size >= NODE_OVERHEAD);
-//assert( node->size == (FENCE_BACKWARD(start + node->size)->size));
 
     if (split_size >= NODE_OVERHEAD) {
         //~ /* Enough space for a new free node. Insert into the free nodes list */
@@ -277,8 +267,8 @@ static void malloc_fnode_release(fnode_t *list, fence_t target)
     fnode_t node;
     SET_FREE(target->size);
     node = malloc_fnode_assign_free((char*)target, target->size);
-    malloc_list_addr_insert(list, node);
-    //node = malloc_fnode_fuse_up(list, node);
+    //malloc_list_addr_insert(list, node);
+    node = malloc_fnode_fuse_up(list, node);
     //node = malloc_fnode_fuse_down(list, node);
 }
 
@@ -307,15 +297,17 @@ static fnode_t malloc_fnode_fuse_up(fnode_t *list, fnode_t node)
     fence_t prev_backfence = FENCE_BACKWARD(node);
     fence_t curr_backfence;
     if (ISUSED(prev_backfence->size)) {
+        printf("Top in use.\n");
         malloc_list_addr_insert(list, node);
         return node;
+    } else {
+        printf("Top not in use.\n");
+        prev_node = (fnode_t) ((char*) node - prev_backfence->size);
+        curr_backfence = FENCE_BACKWARD((char*) node + node->size);
+        prev_node->size += node->size;
+        curr_backfence->size = prev_node->size;
+        return prev_node;
     }
-    prev_node = (fnode_t) ((char*)node - prev_backfence->size);
-    curr_backfence = FENCE_BACKWARD((char*) node + node->size);
-    prev_node->size += node->size;
-    curr_backfence->size = prev_node->size;
-    
-    return prev_node;
 }
 
 static fnode_t malloc_fnode_fuse_down(fnode_t *list, fnode_t node)
@@ -344,7 +336,7 @@ static void malloc_print_fnode(fnode_t front)
 {
     int i = 0;
     size_t real_size = GETSIZE(front->size);
-    size_t footer_size = FENCE_BACKWARD((char*)front + real_size)->size;
+    size_t footer_size = FENCE_BACKWARD((char*) front + real_size)->size;
     printf("Listing a chunk...\n");
     printf("prev pointer %ld. ", front->prev);
     printf("next pointer %ld.\n", front->next);
@@ -363,7 +355,7 @@ static void malloc_print_free_chunks(fnode_t front)
     while (front != NULL) {
         printf("Chunk %d: ", i++);
         printf("Header shows size %ld. ", front->size);
-        footer_size = FENCE_BACKWARD((char*)front + front->size)->size;
+        footer_size = FENCE_BACKWARD((char*) front + front->size)->size;
         printf("Footer shows size %ld.\n", footer_size);
         if (front->size != footer_size) {
             printf("Inconsistent chunk size!\n");
@@ -379,17 +371,17 @@ static void malloc_print_all_chunks(char *start)
     int i = 0;
     size_t footer_size;
     printf("Listing each chunk...\n");
-    //while (front->size != 1) {
+    while (front->size != 1) {
         printf("Chunk %d: ", i++);
         printf("Header shows size %ld. ", front->size);
-        back = FENCE_BACKWARD(front + front->size);
+        back = FENCE_BACKWARD((char*) front + front->size);
         footer_size = back->size;
         printf("Footer shows size %ld.\n", footer_size);
         if (front->size != footer_size) {
             printf("Inconsistent chunk size!\n");
         }
         front = back + 1;
-    //}
+    }
 }
 #endif /* DEBUG != 0 */
 
