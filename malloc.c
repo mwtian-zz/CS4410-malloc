@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <unistd.h>
+#include <assert.h>
 
 #include "malloc.h"
 #include "memreq.h"
@@ -42,7 +43,7 @@
 #define ROUNDUP_8(x) (((((x)-1)>>3)+1)<<3)
 #define ROUNDUP_16(x) (((((x)-1)>>4)+1)<<4)
 #define ROUNDUP_PAGE(x) (((((x)-1)/PAGE_SIZE)+1)*PAGE_SIZE)
-#define ROUNDUP_CHUNK(x) ROUNDUP_16(MAX((x),DIFF_OVERHEAD)+FENCE_OVERHEAD)
+#define ROUNDUP_CHUNK(x) ROUNDUP_16(MAX((x),DIFF_OVERHEAD)+FENCE_OVERHEAD) // ROUNDUP_16(MAX((x),NODE_OVERHEAD))
 
 /* Get a pointer to the previous neighoring fence */
 #define FENCE_BACKWARD(x) ((fence_t)(x)-1)
@@ -79,9 +80,9 @@ static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static fnode_t malloc_expand(size_t size);
 static fnode_t malloc_fnode_assign_free(char *start, size_t size);
+static void *malloc_fnode_assign_used(char *start, size_t size);
 static fnode_t malloc_find_fit(fnode_t target, size_t size);
-static void *malloc_fnode_split(fnode_t *list, fnode_t node, size_t size);
-static void malloc_fnode_assign_used(char *start, size_t size);
+static fnode_t malloc_fnode_split(fnode_t *list, fnode_t node, size_t size);
 static void malloc_fnode_release(fnode_t *list, fence_t item);
 static fnode_t malloc_fnode_fuse_up(fnode_t *list, fnode_t node);
 static fnode_t malloc_fnode_fuse_down(fnode_t *list, fnode_t node);
@@ -91,9 +92,9 @@ static void malloc_list_remove(fnode_t *list, fnode_t node);
 
 /* Debugging */
 #if DEBUG != 0
-static int free_count = 0;
 static void malloc_print_free_chunks(fnode_t list);
 static void malloc_print_all_chunks(char *start);
+static void malloc_print_fnode(fnode_t front);
 #endif /* DEBUG != 0 */
 
 void *malloc(size_t size) 
@@ -119,12 +120,24 @@ void *malloc(size_t size)
             return NULL;
         }
     }
-    ret = malloc_fnode_split(&flist, fit, size);
+#if DEBUG != 0
+printf("In list. \n");
+malloc_print_free_chunks(flist);
+#endif /* DEBUG != 0 */
+    fit = malloc_fnode_split(&flist, fit, size);
+    malloc_list_remove(&flist, fit);
+#if DEBUG != 0
+printf("Removed from list. \n");
+malloc_print_free_chunks(flist);
+#endif /* DEBUG != 0 */
+    ret = malloc_fnode_assign_used((char*)fit, fit->size);
     
     #if PTHREAD_COMPILE != 0
     pthread_mutex_unlock(&mutex);
     #endif /* PTHREAD_COMPILE != 0 */
-    
+#if DEBUG != 0
+printf("Return: %p\n", ret);
+#endif /* DEBUG != 0 */
     return ret;
 }
 
@@ -164,7 +177,22 @@ static fnode_t malloc_fnode_assign_free(char *start, size_t size)
     end->size = node->size;
     node->prev = NULL;
     node->next = NULL;
+    
     return node;
+}
+
+/* Prepare node to be returned to the user. */
+static void *malloc_fnode_assign_used(char *start, size_t size)
+{
+    fnode_t node = (fnode_t) start;
+    fence_t end = FENCE_BACKWARD((start + size));
+    node->size = size;
+    SET_USED(node->size);
+    end->size = node->size;
+    node->prev = NULL;
+    node->next = NULL;
+ 
+    return start + FENCE_SIZE;
 }
 
 /* Increase break, return a free node at the new break. */
@@ -188,7 +216,7 @@ static fnode_t malloc_expand(size_t size)
         ((fence_t) start)->size = 1;
         FENCE_BACKWARD(start + size)->size = 1;
         start += FENCE_SIZE;
-        size -= FENCE_OVERHEAD;
+        size -= 2 * FENCE_SIZE;
         HEAP_START = start;
     } else {
         FENCE_BACKWARD(start + size)->size = 1;
@@ -221,40 +249,26 @@ static void malloc_list_addr_insert(fnode_t *list, fnode_t item)
 }
 
 /* Split the node if possible. 'size' is the size requested (rounded up). */
-static void *malloc_fnode_split(fnode_t *list, fnode_t node, size_t size)
+static fnode_t malloc_fnode_split(fnode_t *list, fnode_t node, size_t size)
 {
     char *start = (char*) node;
     char *split = ((char*) node) + size;
     size_t split_size = node->size - size;
     fnode_t node_new;
-    if (split_size >= NODE_OVERHEAD) {
-        /* Enough space for a new free node. Insert into the free nodes list */
-        node_new = malloc_fnode_assign_free(split, split_size);
-        if ((node_new->prev = node->prev))
-            node_new->prev->next = node_new;
-        if ((node_new->next = node->next))
-            node_new->next->prev = node_new;
-        if (*list == node)
-            *list = node_new;
-    } else {
-        /* Give the whole node to the user */
-        malloc_list_remove(&flist, node);
-        size = node->size;
-    }
-    malloc_fnode_assign_used(start, node->size);
-    return start + FENCE_SIZE;
-}
+    
+//assert( size >= NODE_OVERHEAD);
+//assert( node->size == (FENCE_BACKWARD(start + node->size)->size));
 
-/* Prepare node to be returned to the user. */
-static void malloc_fnode_assign_used(char *start, size_t size)
-{
-    fnode_t node = (fnode_t) start;
-    fence_t end = FENCE_BACKWARD((start + size));
-    node->size = size;
-    SET_USED(node->size);
-    end->size = node->size;
-    node->prev = NULL;
-    node->next = NULL;
+    if (split_size >= NODE_OVERHEAD) {
+        //~ /* Enough space for a new free node. Insert into the free nodes list */
+        malloc_list_remove(list, node);
+        node = malloc_fnode_assign_free(start, size);
+        node_new = malloc_fnode_assign_free(split, split_size);
+        malloc_list_addr_insert(list, node);
+        malloc_list_addr_insert(list, node_new);
+    }
+    
+    return node;
 }
 
 /* Add the chunk back to the free list. */
@@ -263,7 +277,7 @@ static void malloc_fnode_release(fnode_t *list, fence_t target)
     fnode_t node;
     SET_FREE(target->size);
     node = malloc_fnode_assign_free((char*)target, target->size);
-    malloc_list_addr_insert(list, target);
+    malloc_list_addr_insert(list, node);
     //node = malloc_fnode_fuse_up(list, node);
     //node = malloc_fnode_fuse_down(list, node);
 }
@@ -325,8 +339,22 @@ static fnode_t malloc_fnode_fuse_down(fnode_t *list, fnode_t node)
     return node;
 }
 
-
 #if DEBUG != 0
+static void malloc_print_fnode(fnode_t front)
+{
+    int i = 0;
+    size_t real_size = GETSIZE(front->size);
+    size_t footer_size = FENCE_BACKWARD((char*)front + real_size)->size;
+    printf("Listing a chunk...\n");
+    printf("prev pointer %ld. ", front->prev);
+    printf("next pointer %ld.\n", front->next);
+    printf("Header shows size %ld. ", front->size);
+    printf("Footer shows size %ld.\n", footer_size);
+    if (front->size != footer_size) {
+        printf("Inconsistent chunk size!\n");
+    }
+}
+
 static void malloc_print_free_chunks(fnode_t front)
 {
     int i = 0;
@@ -335,7 +363,7 @@ static void malloc_print_free_chunks(fnode_t front)
     while (front != NULL) {
         printf("Chunk %d: ", i++);
         printf("Header shows size %ld. ", front->size);
-        footer_size = FENCE_BACKWARD(front + front->size)->size;
+        footer_size = FENCE_BACKWARD((char*)front + front->size)->size;
         printf("Footer shows size %ld.\n", footer_size);
         if (front->size != footer_size) {
             printf("Inconsistent chunk size!\n");
