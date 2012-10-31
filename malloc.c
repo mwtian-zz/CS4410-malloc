@@ -199,6 +199,8 @@ static fnode_t malloc_expand(size_t size)
 {
     char *start;
     char init = 0;
+    if (0 == size)
+        return NULL;
     /* Two cases; getting initial memory or expanding memory */
     if (0 == PAGE_SIZE) {
         init = 1;
@@ -210,7 +212,6 @@ static fnode_t malloc_expand(size_t size)
     if ((start = get_memory(size)) == NULL) {
         return NULL;
     }
-    HEAP_BREAK += size;
     /* Put on initial fences */
     if (1 == init) {
         HEAP_START = start;
@@ -224,6 +225,19 @@ static fnode_t malloc_expand(size_t size)
         FENCE_BACKWARD(start + size)->size = 1;
         start -= FENCE_SIZE;
     }
+    
+//~ printf("Current number of pages: %ld\n", (HEAP_BREAK - HEAP_START) / PAGE_SIZE);
+//~ printf("Current fence value at the end: %ld\n", FENCE_BACKWARD(HEAP_BREAK)->size);
+//~ if ((HEAP_BREAK - HEAP_START) / PAGE_SIZE >= 9) {
+    //~ printf("Current fence value at 9th page: %ld\n", FENCE_BACKWARD(HEAP_START + 9 * PAGE_SIZE)->size);
+//~ }
+//~ if ((HEAP_BREAK - HEAP_START) / PAGE_SIZE >= 10) {
+    //~ printf("Current fence value at 10th page: %ld\n", FENCE_BACKWARD(HEAP_START + 10 * PAGE_SIZE)->size);
+//~ }
+//~ if ((HEAP_BREAK - HEAP_START) / PAGE_SIZE >= 11) {
+    //~ printf("Current fence value at 11th page: %ld\n", FENCE_BACKWARD(HEAP_START + 11 * PAGE_SIZE)->size);
+//~ }
+
     return malloc_fnode_assign_free(start, size);
 }
 
@@ -317,7 +331,7 @@ static fnode_t malloc_fnode_fuse_up(fnode_t *list, fnode_t node)
     
     prev_node = (fnode_t) ((char*) node - prev_backfence->size);
     if (prev_node->size != prev_backfence->size) {
-if (mark < 3) {
+if (mark < 1) {
 printf("Inconsistent node size discovered in fuse_up!\n");
 //malloc_print_free_chunks(*list);
 printf("number of malloc calls: %d\n", malloc_count);
@@ -468,7 +482,9 @@ calloc_count++;
 
     number_size = number * size;
     void* ret = malloc(number_size);
-
+#if PTHREAD_COMPILE != 0
+pthread_mutex_lock(&mutex);
+#endif /* PTHREAD_COMPILE != 0 */
 if (ret) {
         memset(ret, 0, number_size);
 }
@@ -483,7 +499,11 @@ if (ret) {
             //~ *(target++) = 0;
         //~ }
     //~ }
-
+    
+    #if PTHREAD_COMPILE != 0
+    pthread_mutex_unlock(&mutex);
+    #endif /* PTHREAD_COMPILE != 0 */
+    
     return ret;
 }
 
@@ -493,6 +513,7 @@ void* realloc(void *ptr, size_t size)
     size_t old_size;
     void* ret;
     size_t *source, *target, *end;
+
 realloc_count++;
     if (NULL == ptr) {
         return malloc(size);
@@ -507,7 +528,13 @@ realloc_count++;
         return ptr;
 
 if ((ret = malloc(size))) {
+    #if PTHREAD_COMPILE != 0
+    pthread_mutex_lock(&mutex);
+    #endif /* PTHREAD_COMPILE != 0 */
     memmove(ret, ptr, old_size < size ? old_size : size);
+    #if PTHREAD_COMPILE != 0
+    pthread_mutex_unlock(&mutex);
+    #endif /* PTHREAD_COMPILE != 0 */
     free(ptr);
     return ret;
 } else {
@@ -515,6 +542,7 @@ if ((ret = malloc(size))) {
     return NULL;
 }
 
+    
         //~ if ((ret = malloc(size))) {
         //~ source = ptr;
         //~ target = ret;
