@@ -1,8 +1,9 @@
 /* Set to 0 to turn off debugging. */
-#define DEBUG 1
+#define DEBUG 0
 #if DEBUG != 0
 /* Do not printf inside free */
-#include <stdio.h> 
+#include <stdio.h>
+#include <string.h>
 #endif /* DEBUG != 0 */
 
 /* Set to 0 to not compile with pthread */
@@ -11,7 +12,6 @@
 #include <pthread.h>
 #endif /* PTHREAD_COMPILE != 0 */
 
-#include <string.h>
 #include <errno.h>
 #include <limits.h>
 #include <unistd.h>
@@ -95,10 +95,6 @@ static void malloc_list_remove(fnode_t *list, fnode_t node);
 /* Debugging */
 #if DEBUG != 0
 static int mark = 0;
-static int malloc_count = 0;
-static int calloc_count = 0;
-static int realloc_count = 0;
-static int free_count = 0;
 static void malloc_print_free_chunks(fnode_t list);
 static void malloc_print_all_chunks();
 static void malloc_print_fnode(fnode_t front);
@@ -108,7 +104,7 @@ void *malloc(size_t size)
 {
     fnode_t fit;
     void *ret;
-++malloc_count;
+
     /* The chunk size to be requested */
     size = ROUNDUP_CHUNK(size);
     
@@ -131,8 +127,6 @@ void *malloc(size_t size)
     malloc_list_remove(&flist, fit);
     ret = malloc_fnode_assign_used((char*)fit, fit->size);
     
-//malloc_print_all_chunks();
-
     #if PTHREAD_COMPILE != 0
     pthread_mutex_unlock(&mutex);
     #endif /* PTHREAD_COMPILE != 0 */
@@ -197,11 +191,11 @@ static void *malloc_fnode_assign_used(char *start, size_t size)
 /* Increase break, return a free node at the new break. */
 static fnode_t malloc_expand(size_t size)
 {
-    char *start;
+    char *start, *end;
     char init = 0;
     if (0 == size)
         return NULL;
-    /* Two cases; getting initial memory or expanding memory */
+    /* Initialize if first time running malloc */
     if (0 == PAGE_SIZE) {
         init = 1;
         PAGE_SIZE = sysconf(_SC_PAGESIZE);
@@ -212,31 +206,43 @@ static fnode_t malloc_expand(size_t size)
     if ((start = get_memory(size)) == NULL) {
         return NULL;
     }
-    /* Put on initial fences */
     if (1 == init) {
         HEAP_START = start;
-        HEAP_BREAK = start + size;
+    }
+    
+    /* Two cases; getting an isolated chunk or a neighboring chunk */
+    
+    /* Fence the higher end of the allocated chunk */
+    end = get_memory(0);
+    FENCE_BACKWARD(end)->size = 1;
+    size = end - start;
+    if (HEAP_BREAK + 1 < start) {
+        /* Fence the lower end */
         ((fence_t) start)->size = 1;
-        FENCE_BACKWARD(start + size)->size = 1;
         start += FENCE_SIZE;
         size -= 2 * FENCE_SIZE;
     } else {
-        HEAP_BREAK += size;
-        FENCE_BACKWARD(start + size)->size = 1;
+        /* Absorb the previous fence */
         start -= FENCE_SIZE;
     }
+    HEAP_BREAK = end;
     
-printf("Current number of pages: %ld\n", (HEAP_BREAK - HEAP_START) / PAGE_SIZE);
-printf("Current fence value at the end: %ld\n", FENCE_BACKWARD(HEAP_BREAK)->size);
-//~ if ((HEAP_BREAK - HEAP_START) / PAGE_SIZE >= 9) {
-    //~ printf("Current fence value at 9th page: %ld\n", FENCE_BACKWARD(HEAP_START + 9 * PAGE_SIZE)->size);
-//~ }
-//~ if ((HEAP_BREAK - HEAP_START) / PAGE_SIZE >= 10) {
-    //~ printf("Current fence value at 10th page: %ld\n", FENCE_BACKWARD(HEAP_START + 10 * PAGE_SIZE)->size);
-//~ }
-//~ if ((HEAP_BREAK - HEAP_START) / PAGE_SIZE >= 11) {
-    //~ printf("Current fence value at 11th page: %ld\n", FENCE_BACKWARD(HEAP_START + 11 * PAGE_SIZE)->size);
-//~ }
+    #if DEBUG != 0
+    //~ printf("Current number of pages: %ld\n", (HEAP_BREAK - HEAP_START) / PAGE_SIZE);
+    //~ printf("Current fence value at the end: %ld\n", FENCE_BACKWARD(HEAP_BREAK)->size);
+    //~ printf("Current recorded break: %p\n", HEAP_BREAK);
+    //~ printf("Current actual break: %p\n", sbrk(0));
+
+    //~ if ((HEAP_BREAK - HEAP_START) / PAGE_SIZE >= 9) {
+        //~ printf("Current fence value at 9th page: %ld\n", FENCE_BACKWARD(HEAP_START + 9 * PAGE_SIZE)->size);
+    //~ }
+    //~ if ((HEAP_BREAK - HEAP_START) / PAGE_SIZE >= 10) {
+        //~ printf("Current fence value at 10th page: %ld\n", FENCE_BACKWARD(HEAP_START + 10 * PAGE_SIZE)->size);
+    //~ }
+    //~ if ((HEAP_BREAK - HEAP_START) / PAGE_SIZE >= 11) {
+        //~ printf("Current fence value at 11th page: %ld\n", FENCE_BACKWARD(HEAP_START + 11 * PAGE_SIZE)->size);
+    //~ }
+    #endif /* DEBUG != 0 */
 
     return malloc_fnode_assign_free(start, size);
 }
@@ -276,7 +282,7 @@ static fnode_t malloc_fnode_split(fnode_t *list, fnode_t node, size_t size)
     fnode_t node_new;
 
     if (split_size >= NODE_OVERHEAD) {
-        //~ /* Enough space for a new free node. Insert into the free nodes list */
+        /* Enough space for a new free node. Insert into the free nodes list */
         malloc_list_remove(list, node);
         node = malloc_fnode_assign_free(start, size);
         node_new = malloc_fnode_assign_free(split, split_size);
@@ -311,11 +317,8 @@ static void malloc_fnode_release(fnode_t *list, fence_t target)
     fnode_t node;
     SET_FREE(target->size);
     node = malloc_fnode_assign_free((char*)target, target->size);
-    //malloc_list_addr_insert(list, node);
     node = malloc_fnode_fuse_up(list, node);
-    //node = malloc_fnode_fuse_down(list, node);
-//malloc_print_all_chunks();      
-
+    node = malloc_fnode_fuse_down(list, node);
 }
 
 /* Fuse with the neighbor free nodes if possible. */
@@ -330,20 +333,21 @@ static fnode_t malloc_fnode_fuse_up(fnode_t *list, fnode_t node)
     }
     
     prev_node = (fnode_t) ((char*) node - prev_backfence->size);
-    if (prev_node->size != prev_backfence->size) {
-if (mark < 1) {
-printf("Inconsistent node size discovered in fuse_up!\n");
-//malloc_print_free_chunks(*list);
-printf("number of malloc calls: %d\n", malloc_count);
-printf("number of calloc calls: %d\n", calloc_count);
-printf("number of realloc calls: %d\n", realloc_count);
 
-printf("previous node shows size: %ld\n", prev_node->size);
-printf("previous fence shows size: %ld\n", prev_backfence->size);
-printf("previous node address: %p\n", prev_node);
-malloc_print_all_chunks();
-mark++;
-}
+    if (prev_node->size != prev_backfence->size) {
+        
+        #if DEBUG != 0
+        if (mark < 2) {
+        printf("Inconsistent node size discovered in fuse_up!\n");
+        //malloc_print_free_chunks(*list);
+        printf("previous node shows size: %ld\n", prev_node->size);
+        printf("previous fence shows size: %ld\n", prev_backfence->size);
+        printf("previous node address: %p\n", prev_node);
+        malloc_print_all_chunks();
+        mark++;
+        }
+        #endif /* DEBUG != 0 */
+
         malloc_list_addr_insert(list, node);
         return node;
     }
@@ -466,11 +470,7 @@ void* calloc(size_t number, size_t size)
 {
     size_t number_size = 0;
     size_t *target, *end;
-    char *erase;
-    size_t i;
     
-calloc_count++;
-
     /* This prevents an integer overflow.  A size_t is a typedef to an integer
      * large enough to index all of memory.  If we cannot fit in a size_t, then
      * we need to fail.
@@ -482,27 +482,14 @@ calloc_count++;
 
     number_size = number * size;
     void* ret = malloc(number_size);
-#if PTHREAD_COMPILE != 0
-pthread_mutex_lock(&mutex);
-#endif /* PTHREAD_COMPILE != 0 */
-if (ret) {
-        memset(ret, 0, number_size);
-}
 
-    //~ if (ret) {
-        //~ erase = ret;
-        //~ for (i = 0; i < number_size; i++) {
-            //~ erase[i] = 0;
-        //~ }
-        //end = target + ROUNDUP_8(number_size) / SIZE_T_SIZE - 1;
-        //~ while (target < end) {
-            //~ *(target++) = 0;
-        //~ }
-    //~ }
-    
-    #if PTHREAD_COMPILE != 0
-    pthread_mutex_unlock(&mutex);
-    #endif /* PTHREAD_COMPILE != 0 */
+    if (ret) {
+        target = ret;
+        end = target + ROUNDUP_16(number_size) / SIZE_T_SIZE;
+        while (target < end) {
+            *(target++) = 0;
+        }
+    }
     
     return ret;
 }
@@ -514,7 +501,6 @@ void* realloc(void *ptr, size_t size)
     void* ret;
     size_t *source, *target, *end;
 
-realloc_count++;
     if (NULL == ptr) {
         return malloc(size);
     }
@@ -526,32 +512,19 @@ realloc_count++;
     old_size = GETSIZE(FENCE_BACKWARD(ptr)->size) - FENCE_OVERHEAD;
     if (old_size >= size)
         return ptr;
-
-if ((ret = malloc(size))) {
-    #if PTHREAD_COMPILE != 0
-    pthread_mutex_lock(&mutex);
-    #endif /* PTHREAD_COMPILE != 0 */
-    memmove(ret, ptr, old_size < size ? old_size : size);
-    #if PTHREAD_COMPILE != 0
-    pthread_mutex_unlock(&mutex);
-    #endif /* PTHREAD_COMPILE != 0 */
-    free(ptr);
-    return ret;
-} else {
-    errno = ENOMEM;
-    return NULL;
-}
-
     
-        //~ if ((ret = malloc(size))) {
-        //~ source = ptr;
-        //~ target = ret;
-        //~ end = target + old_size / SIZE_T_SIZE;
-        //~ while (target < end) {
-            //~ *(target++) = *(source++);
-        //~ }
-        //~ free(ptr);
-    //~ } 
-    return ret;
+    if ((ret = malloc(size))) {
+        source = ptr;
+        target = ret;
+        end = target + old_size / SIZE_T_SIZE;
+        while (target < end) {
+            *(target++) = *(source++);
+        }
+        free(ptr);
+    } else {
+        errno = ENOMEM;
+        return NULL;
+    }
     
+    return ret;
 }
