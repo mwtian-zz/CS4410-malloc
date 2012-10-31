@@ -1,14 +1,14 @@
 #include <stdio.h>
 #include "malloc.h"
 
-#define NUM_MALLOCS 50000
+#define NUM_MALLOCS 5000
 
 int main() {
     int i;
     int* ptrs[NUM_MALLOCS];
 
     for(i = 0; i < NUM_MALLOCS; i++){
-        ptrs[i] = (int*) malloc(sizeof(int) * (i+1));
+        ptrs[i] = (int*) calloc((i+1), sizeof(int));
         ptrs[i][i] = i;
     }
 
