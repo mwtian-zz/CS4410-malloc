@@ -226,8 +226,8 @@ static fnode_t malloc_expand(size_t size)
         start -= FENCE_SIZE;
     }
     
-//~ printf("Current number of pages: %ld\n", (HEAP_BREAK - HEAP_START) / PAGE_SIZE);
-//~ printf("Current fence value at the end: %ld\n", FENCE_BACKWARD(HEAP_BREAK)->size);
+printf("Current number of pages: %ld\n", (HEAP_BREAK - HEAP_START) / PAGE_SIZE);
+printf("Current fence value at the end: %ld\n", FENCE_BACKWARD(HEAP_BREAK)->size);
 //~ if ((HEAP_BREAK - HEAP_START) / PAGE_SIZE >= 9) {
     //~ printf("Current fence value at 9th page: %ld\n", FENCE_BACKWARD(HEAP_START + 9 * PAGE_SIZE)->size);
 //~ }
